@@ -58,7 +58,10 @@ let sseTransport: SSEServerTransport | null = null;
 
 app.get('/sse', async (req, res) => {
   console.log('New SSE connection requested');
-  sseTransport = new SSEServerTransport('/messages', res);
+  // Cast 'res' to 'any' to resolve TypeScript compilation error TS2559
+  // where Express Response and http.ServerResponse have slight typing mismatches
+  // with the SSEServerTransport constructor.
+  sseTransport = new SSEServerTransport('/messages', res as any);
   await server.connect(sseTransport);
   
   req.on('close', () => {
