@@ -11,8 +11,8 @@ dotenv.config();
 
 // Database setup
 const db = new sqlite3.Database('tokens.db');
-const dbRun = promisify(db.run.bind(db));
-const dbGet = promisify(db.get.bind(db));
+const dbRun = promisify(db.run.bind(db)) as (sql: string, ...params: any[]) => Promise<void>;
+const dbGet = promisify(db.get.bind(db)) as (sql: string, ...params: any[]) => Promise<any>;
 
 // Initialize database - wrap in a self-invoking function or use then/catch since top-level await is fine in NodeNext
 dbRun('CREATE TABLE IF NOT EXISTS user_tokens (user_id TEXT PRIMARY KEY, slack_token TEXT)')
@@ -195,7 +195,7 @@ app.post('/messages', express.json(), async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Multi-tenant Slack MCP Server listening on 0.0.0.0:${PORT}`);
 });
