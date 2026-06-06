@@ -74,7 +74,7 @@ app.post('/messages', express.json(), async (req, res) => {
     res.status(400).send('No active SSE connection');
     return;
   }
-  await sseTransport.handleMessage(req, res);
+  await sseTransport.handleMessage(req as any, res as any);
 });
 
 const PORT = process.env.PORT || 3000;
