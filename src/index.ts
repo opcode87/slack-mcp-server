@@ -6,11 +6,22 @@ import { WebClient } from '@slack/web-api';
 import dotenv from 'dotenv';
 import sqlite3 from 'sqlite3';
 import { promisify } from 'util';
+import path from 'path';
+import fs from 'fs';
 
 dotenv.config();
 
+// Ensure data directory exists for SQLite
+const DATA_DIR = process.env.DATA_DIR || './data';
+if (!fs.existsSync(DATA_DIR)) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+}
+
+const DB_PATH = path.join(DATA_DIR, 'tokens.db');
+console.log(`Using database at: ${DB_PATH}`);
+
 // Database setup
-const db = new sqlite3.Database('tokens.db');
+const db = new sqlite3.Database(DB_PATH);
 const dbRun = promisify(db.run.bind(db)) as (sql: string, ...params: any[]) => Promise<void>;
 const dbGet = promisify(db.get.bind(db)) as (sql: string, ...params: any[]) => Promise<any>;
 
@@ -20,8 +31,13 @@ dbRun('CREATE TABLE IF NOT EXISTS user_tokens (user_id TEXT PRIMARY KEY, slack_t
   .catch((err) => console.error('Database initialization error:', err));
 
 async function getSlackToken(userId: string): Promise<string | undefined> {
-  const row = await dbGet('SELECT slack_token FROM user_tokens WHERE user_id = ?', [userId]) as { slack_token: string } | undefined;
-  return row?.slack_token;
+  try {
+    const row = await dbGet('SELECT slack_token FROM user_tokens WHERE user_id = ?', [userId]) as { slack_token: string } | undefined;
+    return row?.slack_token;
+  } catch (err) {
+    console.error('Error fetching slack token:', err);
+    return undefined;
+  }
 }
 
 async function setSlackToken(userId: string, token: string): Promise<void> {
@@ -152,7 +168,9 @@ app.get('/auth/slack/callback', async (req, res) => {
     }
   } catch (error) {
     console.error('OAuth callback error:', error);
-    res.status(500).send('Internal Server Error');
+    if (!res.headersSent) {
+        res.status(500).send('Internal Server Error');
+    }
   }
 });
 
@@ -166,20 +184,21 @@ app.get('/sse', async (req, res) => {
       slackToken = await getSlackToken(userId);
     }
 
-    // Always allow the handshake to succeed with HTTP 200
     const server = createServer(slackToken);
     
     // Construct the absolute URL for the messages endpoint
-    const host = req.get('host');
-    const protocol = req.protocol;
-    const messagesUrl = `${protocol}://${host}/messages`;
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.headers['x-forwarded-host'] || req.get('host');
+    const endpointUrl = new URL('/messages', `${protocol}://${host}`).toString();
     
-    const transport = new SSEServerTransport(messagesUrl, res as any);
+    console.log(`Handshaking with endpoint: ${endpointUrl}`);
+    
+    const transport = new SSEServerTransport(endpointUrl as any, res as any);
     await server.connect(transport);
     
     const sessionId = transport.sessionId;
     activeTransports.set(sessionId, transport);
-    console.log(`Session ${sessionId} started for user ${userId || 'anonymous'}. Messages URL: ${messagesUrl}`);
+    console.log(`Session ${sessionId} started for user ${userId || 'anonymous'}`);
     
     req.on('close', () => {
       activeTransports.delete(sessionId);
@@ -202,16 +221,26 @@ app.post('/messages', express.json(), async (req, res) => {
 
   const transport = activeTransports.get(sessionId);
   if (!transport) {
+    console.warn(`No active session found for ID: ${sessionId}`);
+    // If the session isn't found, it might have been closed or the server redeployed.
+    // Return 404 so the client knows to reconnect.
     res.status(404).send(`No active session found for ID: ${sessionId}`);
     return;
   }
 
   try {
+    // Wrap the message handler in a try-catch to prevent 500s from crashing the response
     await transport.handleMessage(req as any, res as any);
   } catch (error) {
     console.error(`Error handling message for session ${sessionId}:`, error);
     if (!res.headersSent) {
-      res.status(500).send('Error handling message');
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32603,
+          message: "Internal error handling MCP message"
+        }
+      });
     }
   }
 });
