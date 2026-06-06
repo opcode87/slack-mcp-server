@@ -168,12 +168,18 @@ app.get('/sse', async (req, res) => {
 
     // Always allow the handshake to succeed with HTTP 200
     const server = createServer(slackToken);
-    const transport = new SSEServerTransport('/messages', res as any);
+    
+    // Construct the absolute URL for the messages endpoint
+    const host = req.get('host');
+    const protocol = req.protocol;
+    const messagesUrl = `${protocol}://${host}/messages`;
+    
+    const transport = new SSEServerTransport(messagesUrl, res as any);
     await server.connect(transport);
     
     const sessionId = transport.sessionId;
     activeTransports.set(sessionId, transport);
-    console.log(`Session ${sessionId} started for user ${userId || 'anonymous'}`);
+    console.log(`Session ${sessionId} started for user ${userId || 'anonymous'}. Messages URL: ${messagesUrl}`);
     
     req.on('close', () => {
       activeTransports.delete(sessionId);
