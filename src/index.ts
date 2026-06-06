@@ -181,6 +181,7 @@ app.get('/sse', async (req, res) => {
   console.log(`New SSE connection requested. UserID: ${userId || 'none'}`);
   
   try {
+    // 1. Fetch token first so it doesn't delay the transport connection
     let slackToken: string | undefined;
     if (userId) {
       slackToken = await getSlackToken(userId);
@@ -199,14 +200,19 @@ app.get('/sse', async (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable buffering for Nginx/Railway
     res.flushHeaders();
     
     const transport = new SSEServerTransport(endpointUrl as any, res as any);
-    await server.connect(transport);
     
+    // 2. Immediately store the transport BEFORE connecting the server
+    // This ensures /messages can find it if the client sends a message immediately after handshake
     const sessionId = transport.sessionId;
     activeTransports.set(sessionId, transport);
-    console.log(`Session ${sessionId} started for user ${userId || 'anonymous'}`);
+    console.log(`Session ${sessionId} registered for user ${userId || 'anonymous'}`);
+
+    await server.connect(transport);
+    console.log(`Server connected to transport for session ${sessionId}`);
     
     req.on('close', () => {
       activeTransports.delete(sessionId);
@@ -222,6 +228,8 @@ app.get('/sse', async (req, res) => {
 
 app.post('/messages', express.json(), async (req, res) => {
   const sessionId = req.query.sessionId as string;
+  console.log(`POST /messages received for session: ${sessionId}`);
+
   if (!sessionId) {
     res.status(400).send('sessionId query parameter is required');
     return;
@@ -229,7 +237,7 @@ app.post('/messages', express.json(), async (req, res) => {
 
   const transport = activeTransports.get(sessionId);
   if (!transport) {
-    console.warn(`No active session found for ID: ${sessionId}`);
+    console.warn(`No active session found for ID: ${sessionId}. Current active sessions: ${Array.from(activeTransports.keys()).join(', ')}`);
     res.status(404).send(`No active session found for ID: ${sessionId}`);
     return;
   }
