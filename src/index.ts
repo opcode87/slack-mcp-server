@@ -58,6 +58,7 @@ function createServer(slackToken?: string) {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    console.log('Handling list_tools request');
     if (!slackToken) {
       return {
         tools: [
@@ -89,6 +90,7 @@ function createServer(slackToken?: string) {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    console.log(`Handling call_tool request: ${request.params.name}`);
     if (!slackToken) {
       return {
         isError: true,
@@ -193,6 +195,12 @@ app.get('/sse', async (req, res) => {
     
     console.log(`Handshaking with endpoint: ${endpointUrl}`);
     
+    // Set headers for SSE stability
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    
     const transport = new SSEServerTransport(endpointUrl as any, res as any);
     await server.connect(transport);
     
@@ -227,11 +235,12 @@ app.post('/messages', express.json(), async (req, res) => {
   }
 
   try {
+    console.log(`Forwarding message to transport for session ${sessionId}`);
     await transport.handleMessage(req as any, res as any);
+    console.log(`Message handled successfully for session ${sessionId}`);
   } catch (error) {
     console.error(`Error handling message for session ${sessionId}:`, error);
     if (!res.headersSent) {
-      // Return 200 with the error in the body so Poke's validation probe doesn't fail on HTTP status
       res.status(200).json({
         jsonrpc: "2.0",
         id: req.body?.id || null,
