@@ -12,11 +12,13 @@
     "@modelcontextprotocol/sdk": "latest",
     "@slack/web-api": "latest",
     "dotenv": "latest",
-    "express": "latest"
+    "express": "latest",
+    "sqlite3": "latest"
   },
   "devDependencies": {
     "@types/express": "latest",
     "@types/node": "latest",
+    "@types/sqlite3": "latest",
     "typescript": "latest"
   }
 }
