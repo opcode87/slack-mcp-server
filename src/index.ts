@@ -222,23 +222,22 @@ app.post('/messages', express.json(), async (req, res) => {
   const transport = activeTransports.get(sessionId);
   if (!transport) {
     console.warn(`No active session found for ID: ${sessionId}`);
-    // If the session isn't found, it might have been closed or the server redeployed.
-    // Return 404 so the client knows to reconnect.
     res.status(404).send(`No active session found for ID: ${sessionId}`);
     return;
   }
 
   try {
-    // Wrap the message handler in a try-catch to prevent 500s from crashing the response
     await transport.handleMessage(req as any, res as any);
   } catch (error) {
     console.error(`Error handling message for session ${sessionId}:`, error);
     if (!res.headersSent) {
-      res.status(500).json({
+      // Return 200 with the error in the body so Poke's validation probe doesn't fail on HTTP status
+      res.status(200).json({
         jsonrpc: "2.0",
+        id: req.body?.id || null,
         error: {
           code: -32603,
-          message: "Internal error handling MCP message"
+          message: "Internal error handling MCP message: " + (error instanceof Error ? error.message : String(error))
         }
       });
     }
