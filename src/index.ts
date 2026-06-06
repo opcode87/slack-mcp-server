@@ -14,8 +14,10 @@ const db = new sqlite3.Database('tokens.db');
 const dbRun = promisify(db.run.bind(db));
 const dbGet = promisify(db.get.bind(db));
 
-// Initialize database
-await dbRun('CREATE TABLE IF NOT EXISTS user_tokens (user_id TEXT PRIMARY KEY, slack_token TEXT)');
+// Initialize database - wrap in a self-invoking function or use then/catch since top-level await is fine in NodeNext
+dbRun('CREATE TABLE IF NOT EXISTS user_tokens (user_id TEXT PRIMARY KEY, slack_token TEXT)')
+  .then(() => console.log('Database initialized'))
+  .catch((err) => console.error('Database initialization error:', err));
 
 async function getSlackToken(userId: string): Promise<string | undefined> {
   const row = await dbGet('SELECT slack_token FROM user_tokens WHERE user_id = ?', [userId]) as { slack_token: string } | undefined;
@@ -78,6 +80,11 @@ function createServer(slackToken: string) {
 const app = express();
 const activeTransports = new Map<string, SSEServerTransport>();
 
+// Root route for health check
+app.get('/', (req, res) => {
+  res.send('Multi-tenant Slack MCP Server is running.');
+});
+
 // Slack OAuth Endpoints
 app.get('/auth/slack', (req, res) => {
   const userId = req.query.userId as string;
@@ -90,7 +97,13 @@ app.get('/auth/slack', (req, res) => {
   const redirectUri = process.env.SLACK_REDIRECT_URI;
   const scopes = 'chat:write,channels:read,groups:read';
   
-  const slackAuthUrl = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri!)}&state=${userId}`;
+  if (!clientId || !redirectUri) {
+    console.error('Missing SLACK_CLIENT_ID or SLACK_REDIRECT_URI');
+    res.status(500).send('Server configuration error: Missing Client ID or Redirect URI');
+    return;
+  }
+
+  const slackAuthUrl = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri)}&state=${userId}`;
   res.redirect(slackAuthUrl);
 });
 
@@ -183,6 +196,6 @@ app.post('/messages', express.json(), async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Multi-tenant Slack MCP Server listening on port ${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Multi-tenant Slack MCP Server listening on 0.0.0.0:${PORT}`);
 });
