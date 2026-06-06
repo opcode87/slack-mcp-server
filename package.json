@@ -1,0 +1,19 @@
+{
+  "name": "slack-mcp-server",
+  "version": "1.0.0",
+  "description": "Slack MCP server for sending messages",
+  "main": "build/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node build/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.1",
+    "@slack/web-api": "^7.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "typescript": "^5.3.3"
+  }
+}
