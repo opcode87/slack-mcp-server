@@ -14,7 +14,7 @@ const db = new sqlite3.Database('tokens.db');
 const dbRun = promisify(db.run.bind(db)) as (sql: string, ...params: any[]) => Promise<void>;
 const dbGet = promisify(db.get.bind(db)) as (sql: string, ...params: any[]) => Promise<any>;
 
-// Initialize database - wrap in a self-invoking function or use then/catch since top-level await is fine in NodeNext
+// Initialize database
 dbRun('CREATE TABLE IF NOT EXISTS user_tokens (user_id TEXT PRIMARY KEY, slack_token TEXT)')
   .then(() => console.log('Database initialized'))
   .catch((err) => console.error('Database initialization error:', err));
@@ -28,8 +28,7 @@ async function setSlackToken(userId: string, token: string): Promise<void> {
   await dbRun('INSERT OR REPLACE INTO user_tokens (user_id, slack_token) VALUES (?, ?)', [userId, token]);
 }
 
-function createServer(slackToken: string) {
-  const slackClient = new WebClient(slackToken);
+function createServer(slackToken?: string) {
   const server = new Server(
     {
       name: 'slack-mcp-server',
@@ -43,6 +42,18 @@ function createServer(slackToken: string) {
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    if (!slackToken) {
+      return {
+        tools: [
+          {
+            name: 'authorization_required',
+            description: 'This server requires authorization. Please visit the /auth/slack endpoint.',
+            inputSchema: { type: 'object', properties: {} }
+          }
+        ],
+      };
+    }
+
     return {
       tools: [
         {
@@ -62,6 +73,15 @@ function createServer(slackToken: string) {
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    if (!slackToken) {
+      return {
+        isError: true,
+        content: [{ type: 'text', text: 'Error: Slack authorization is required. Please visit /auth/slack to authorize.' }]
+      };
+    }
+
+    const slackClient = new WebClient(slackToken);
+
     if (request.params.name === 'post_message') {
       const { channel, text } = request.params.arguments as { channel: string; text: string };
       try {
@@ -138,31 +158,26 @@ app.get('/auth/slack/callback', async (req, res) => {
 
 app.get('/sse', async (req, res) => {
   const userId = req.query.userId as string;
-  if (!userId) {
-    res.status(400).send('userId query parameter is required');
-    return;
-  }
-
-  console.log(`New SSE connection requested for user: ${userId}`);
+  console.log(`New SSE connection requested. UserID: ${userId || 'none'}`);
   
   try {
-    const slackToken = await getSlackToken(userId);
-    if (!slackToken) {
-      res.status(401).send(`Slack token not found for user ${userId}. Please authorize at /auth/slack?userId=${userId}`);
-      return;
+    let slackToken: string | undefined;
+    if (userId) {
+      slackToken = await getSlackToken(userId);
     }
 
+    // Always allow the handshake to succeed with HTTP 200
     const server = createServer(slackToken);
     const transport = new SSEServerTransport('/messages', res as any);
     await server.connect(transport);
     
     const sessionId = transport.sessionId;
     activeTransports.set(sessionId, transport);
-    console.log(`Session ${sessionId} started for user ${userId}`);
+    console.log(`Session ${sessionId} started for user ${userId || 'anonymous'}`);
     
     req.on('close', () => {
       activeTransports.delete(sessionId);
-      console.log(`Session ${sessionId} closed for user ${userId}`);
+      console.log(`Session ${sessionId} closed for user ${userId || 'anonymous'}`);
     });
   } catch (error) {
     console.error('Error in /sse handler:', error);
