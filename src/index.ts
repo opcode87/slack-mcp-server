@@ -4,12 +4,30 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { WebClient } from '@slack/web-api';
 import dotenv from 'dotenv';
+import sqlite3 from 'sqlite3';
+import { promisify } from 'util';
 
 dotenv.config();
 
-const slackClient = new WebClient(process.env.SLACK_BOT_TOKEN);
+// Database setup
+const db = new sqlite3.Database('tokens.db');
+const dbRun = promisify(db.run.bind(db));
+const dbGet = promisify(db.get.bind(db));
 
-function createServer() {
+// Initialize database
+await dbRun('CREATE TABLE IF NOT EXISTS user_tokens (user_id TEXT PRIMARY KEY, slack_token TEXT)');
+
+async function getSlackToken(userId: string): Promise<string | undefined> {
+  const row = await dbGet('SELECT slack_token FROM user_tokens WHERE user_id = ?', [userId]) as { slack_token: string } | undefined;
+  return row?.slack_token;
+}
+
+async function setSlackToken(userId: string, token: string): Promise<void> {
+  await dbRun('INSERT OR REPLACE INTO user_tokens (user_id, slack_token) VALUES (?, ?)', [userId, token]);
+}
+
+function createServer(slackToken: string) {
+  const slackClient = new WebClient(slackToken);
   const server = new Server(
     {
       name: 'slack-mcp-server',
@@ -58,17 +76,80 @@ function createServer() {
 }
 
 const app = express();
-let sseTransport: SSEServerTransport | null = null;
+const activeTransports = new Map<string, SSEServerTransport>();
+
+// Slack OAuth Endpoints
+app.get('/auth/slack', (req, res) => {
+  const userId = req.query.userId as string;
+  if (!userId) {
+    res.status(400).send('userId query parameter is required');
+    return;
+  }
+
+  const clientId = process.env.SLACK_CLIENT_ID;
+  const redirectUri = process.env.SLACK_REDIRECT_URI;
+  const scopes = 'chat:write,channels:read,groups:read';
+  
+  const slackAuthUrl = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scopes}&redirect_uri=${encodeURIComponent(redirectUri!)}&state=${userId}`;
+  res.redirect(slackAuthUrl);
+});
+
+app.get('/auth/slack/callback', async (req, res) => {
+  const { code, state: userId } = req.query;
+  
+  if (!code || !userId) {
+    res.status(400).send('Missing code or state');
+    return;
+  }
+
+  try {
+    const client = new WebClient();
+    const result = await client.oauth.v2.access({
+      client_id: process.env.SLACK_CLIENT_ID!,
+      client_secret: process.env.SLACK_CLIENT_SECRET!,
+      code: code as string,
+      redirect_uri: process.env.SLACK_REDIRECT_URI!,
+    });
+
+    if (result.ok && result.access_token) {
+      await setSlackToken(userId as string, result.access_token);
+      res.redirect('https://poke.com');
+    } else {
+      res.status(500).send(`Slack OAuth error: ${result.error}`);
+    }
+  } catch (error) {
+    console.error('OAuth callback error:', error);
+    res.status(500).send('Internal Server Error');
+  }
+});
 
 app.get('/sse', async (req, res) => {
-  console.log('New SSE connection requested');
+  const userId = req.query.userId as string;
+  if (!userId) {
+    res.status(400).send('userId query parameter is required');
+    return;
+  }
+
+  console.log(`New SSE connection requested for user: ${userId}`);
+  
   try {
-    const server = createServer();
-    sseTransport = new SSEServerTransport('/messages', res as any);
-    await server.connect(sseTransport);
+    const slackToken = await getSlackToken(userId);
+    if (!slackToken) {
+      res.status(401).send(`Slack token not found for user ${userId}. Please authorize at /auth/slack?userId=${userId}`);
+      return;
+    }
+
+    const server = createServer(slackToken);
+    const transport = new SSEServerTransport('/messages', res as any);
+    await server.connect(transport);
+    
+    const sessionId = transport.sessionId;
+    activeTransports.set(sessionId, transport);
+    console.log(`Session ${sessionId} started for user ${userId}`);
     
     req.on('close', () => {
-      console.log('SSE connection closed');
+      activeTransports.delete(sessionId);
+      console.log(`Session ${sessionId} closed for user ${userId}`);
     });
   } catch (error) {
     console.error('Error in /sse handler:', error);
@@ -79,14 +160,22 @@ app.get('/sse', async (req, res) => {
 });
 
 app.post('/messages', express.json(), async (req, res) => {
-  if (!sseTransport) {
-    res.status(400).send('No active SSE connection');
+  const sessionId = req.query.sessionId as string;
+  if (!sessionId) {
+    res.status(400).send('sessionId query parameter is required');
     return;
   }
+
+  const transport = activeTransports.get(sessionId);
+  if (!transport) {
+    res.status(404).send(`No active session found for ID: ${sessionId}`);
+    return;
+  }
+
   try {
-    await sseTransport.handleMessage(req as any, res as any);
+    await transport.handleMessage(req as any, res as any);
   } catch (error) {
-    console.error('Error handling message:', error);
+    console.error(`Error handling message for session ${sessionId}:`, error);
     if (!res.headersSent) {
       res.status(500).send('Error handling message');
     }
@@ -95,5 +184,5 @@ app.post('/messages', express.json(), async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+  console.log(`Multi-tenant Slack MCP Server listening on port ${PORT}`);
 });
